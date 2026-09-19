@@ -1,0 +1,22 @@
+# ============================================================================
+# docker-compose.yml — удобный запуск бота одной командой:
+#
+#   docker compose up -d
+#
+# Настройки берутся из файла .env (в git не попадает, см. .gitignore).
+# Перед первым запуском:  cp .env.example .env  и заполните TELEGRAM_BOT_TOKEN.
+# ============================================================================
+
+services:
+  bot:
+    build: .
+    image: anime-scanner-bot
+    container_name: anime-scanner-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
