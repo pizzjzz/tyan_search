@@ -640,7 +640,7 @@ func (b *Bot) handleCallback(q *tgbotapi.CallbackQuery) {
 
 // sendText отправляет текстовое сообщение (parseMode — markdown или "").
 func (b *Bot) sendText(chatID int64, text, parseMode string, replyTo int) {
-	msg := tgbotapi.NewMessage(chatID, text)
+	msg := tgbotapi.NewMessage(chatID, strings.Replace(text, "\\]", "]", -1))
 	msg.ParseMode = parseMode
 	msg.DisableWebPagePreview = true
 	if replyTo > 0 {
@@ -735,7 +735,7 @@ func (b *Bot) sendAnimeInfo(chatID int64, a *UnifiedAnime, replyTo int) {
 	sb.WriteString("\n\n*Формат:* " + mdEscape(format))
 	sb.WriteString("\n*Статус:* " + mdEscape(status))
 
-	b.sendText(chatID, sb.String(), markdown, replyTo)
+	b.sendText(chatID, strings.Replace(sb.String(), "\\]", "]", -1), markdown, replyTo)
 }
 
 // ============================================================================
@@ -755,7 +755,6 @@ func candidateTitle(c *UnifiedCharacter) string {
 func mdEscape(s string) string {
 	r := strings.NewReplacer(
 		"\\", "\\\\",
-		"_", "\\_",
 		"*", "\\*",
 		"[", "\\[",
 		"]", "\\]",

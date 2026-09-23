@@ -1,74 +1,139 @@
 package main
 
-import "strings"
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"strings"
+	"time"
+)
 
 // ============================================================================
 // Файл: archetype.go
-// Описание: Определение архетипа персонажа по его биографии.
+// Описание: Определение архетипа персонажа через бесплатный облачный API
+// Pollinations.ai (OpenAI-совместимый формат, без токенов).
 //
-// Jikan (MyAnimeList) не отдаёт структурных тегов характера, поэтому архетип
-// детектится по ключевым словам в тексте биографии "about" (приходит на
-// русском либо английском). Это опциональная функция — её можно отключить
+// Промпт просит вернуть только строку вида «ИмяАрхетипа (описание на русском)»,
+// например: "Tsundere (холодна снаружи, внутри добрая)".
+//
+// Если био пустое либо сервер недоступен (ошибка/таймаут 5с/не-200) — функция
+// возвращает "Не определён". Это опциональная функция: её можно отключить
 // через ARCHETYPE_ENABLED в .env.
 // ============================================================================
 
-// archetypeDef — одно определение архетипа: ключ (имя), слова-маркеры
-// из биографии и краткое описание на русском для ответа бота.
-type archetypeDef struct {
-	key      string
-	keywords []string
-	ru       string
+const (
+	// archetypeEndpoint — адрес API Pollinations.ai (метод POST, формат OpenAI).
+	// Примечание: корень pollinations.ai на POST отдаёт 405, поэтому используем
+	// рабочий chat-эндпоинт text.pollinations.ai/openai.
+	archetypeEndpoint = "https://text.pollinations.ai/openai"
+
+	// archetypeTimeout — таймаут запроса к API (сек).
+	archetypeTimeout = 5 * time.Second
+
+	// archetypeModel — имя модели в OpenAI-формате.
+	archetypeModel = "openai"
+
+	// archetypeUnknown — значение, когда архетип не удалось определить.
+	archetypeUnknown = "Не определён"
+)
+
+// archetypePromptPre — фиксированная часть промпта; в конце дописывается био.
+const archetypePromptPre = "Analyze this anime bio and find personality archetype (Tsundere, Yandere, etc.). Respond ONLY in format: 'Archetype (3-word description in Russian)'. No extra text. Bio: "
+
+// archetypeHTTPClient — клиент с таймаутом 5с. Безопасен для параллельных вызовов.
+var archetypeHTTPClient = &http.Client{Timeout: archetypeTimeout}
+
+// archetypeRequest — тело запроса в OpenAI-совместимом формате.
+type archetypeRequest struct {
+	Model    string             `json:"model"`
+	Messages []archetypeMessage `json:"messages"`
 }
 
-var archetypeDefs = []archetypeDef{
-	{"Tsundere", []string{"цундере", "цундерэ", "тсундере", "tsundere", "притворно холодна"}, "холодна снаружи, но мягкая и заботливая внутри"},
-	{"Kuudere", []string{"кудере", "куудере", "kuudere", "хладнокровн", "бесстрастн", "рассудочн"}, "эмоционально сдержана, кажется холодной и невозмутимой"},
-	{"Dandere", []string{"дандере", "дандэрэ", "dandere", "застенчива", "молчалив", "тих"}, "тихая и застенчивая, раскрывается только с близкими"},
-	{"Yandere", []string{"яндере", "яндэрэ", "yandere", "одержим", "маниакальн"}, "нездорово одержима объектом симпатии и агрессивна к соперникам"},
-	{"Genki", []string{"генки", "genki", "энергичн", "жизнерадостн", "весёл", "боев"}, "энергичная и жизнерадостная, всегда в движении"},
-	{"Kamidere", []string{"камидере", "камидерэ", "kamidere", "божественн", "высокомерн", "преисполнен"}, "ведёт себя как божество, высокомерна и надменна"},
-	{"Bakadere", []string{"бакадере", "bakadere", "глуповат", "рассеянн", "clumsy"}, "простодушная и неуклюжая, часто глупит"},
-	{"Ojou", []string{"одзё", "оджо", "ojou", "аристократ", "высокородн", "из богатой семьи"}, "воспитанная девушка из богатой (аристократической) семьи"},
-	{"Delinquent", []string{"делинквент", "delinquent", "хулиган", "правонарушитель", "punk"}, "хулиган или правонарушитель"},
-	{"Tomboy", []string{"tomboy", "сорванец", "пацанка"}, "девушка с мальчишескими повадками"},
-	{"Childhood Friend", []string{"друг детства", "подруга детства", "childhood friend"}, "друг или подруга детства главного героя"},
-	{"Shy", []string{"застенчив", "стеснител", "скромн", "shy", "quiet"}, "застенчивый и скромный персонаж"},
+type archetypeMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
-// archetypeByKey — быстрый поиск русского описания по имени архетипа.
-var archetypeByKey = func() map[string]string {
-	m := make(map[string]string, len(archetypeDefs))
-	for _, d := range archetypeDefs {
-		m[d.key] = d.ru
-	}
-	return m
-}()
+// archetypeResponse — ответ Pollinations.ai.
+type archetypeResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+}
 
-// archetypeUnknown — значение, когда архетип не удалось определить.
-const archetypeUnknown = "Не определён"
-
-// DetectArchetype ищет в биографии персонажа маркеры архетипов
-// и возвращает имя архетипа либо archetypeUnknown.
+// DetectArchetype определяет архетип персонажа по биографии через Pollinations.ai.
+// Возвращает «ИмяАрхетипа (описание на русском)» либо archetypeUnknown.
 func DetectArchetype(about string) string {
-	if about == "" {
+	// Пустая биография или плейсхолдер отсутствия описания — нечего анализировать.
+	about = strings.TrimSpace(about)
+	if about == "" || about == descriptionAbsent {
 		return archetypeUnknown
 	}
-	low := strings.ToLower(about)
-	for _, d := range archetypeDefs {
-		for _, kw := range d.keywords {
-			if strings.Contains(low, kw) {
-				return d.key
-			}
-		}
+
+	payload := archetypeRequest{
+		Model: archetypeModel,
+		Messages: []archetypeMessage{
+			{Role: "user", Content: archetypePromptPre + about},
+		},
 	}
-	return archetypeUnknown
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return archetypeUnknown
+	}
+
+	req, err := http.NewRequest(http.MethodPost, archetypeEndpoint, bytes.NewReader(body))
+	if err != nil {
+		return archetypeUnknown
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "anime-scanner-bot/1.0")
+
+	resp, err := archetypeHTTPClient.Do(req)
+	if err != nil {
+		return archetypeUnknown
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return archetypeUnknown
+	}
+
+	var out archetypeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return archetypeUnknown
+	}
+	if len(out.Choices) == 0 {
+		return archetypeUnknown
+	}
+
+	// Схлопываем переносы/лишние пробелы: модель может вернуть текст в несколько строк.
+	text := strings.Join(strings.Fields(out.Choices[0].Message.Content), " ")
+	if text == "" {
+		return archetypeUnknown
+	}
+	return text
 }
 
-// archetypeLabel возвращает строку вида "Tsundere — краткое описание"
-// для показа в карточке персонажа.
-func archetypeLabel(name string) string {
-	if ru, ok := archetypeByKey[name]; ok {
-		return name + " — " + ru
+// archetypeLabel приводит строку вида "Tsundere (описание на русском)"
+// к формату "Tsundere — описание на русском" для карточки персонажа.
+// Если скобок в ответе нет — возвращает ответ как есть.
+func archetypeLabel(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == archetypeUnknown {
+		return s
 	}
-	return name
+
+	i := strings.IndexByte(s, '(')
+	if i <= 0 || !strings.HasSuffix(s, ")") {
+		return s
+	}
+
+	name := strings.TrimSpace(s[:i])
+	desc := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s[i+1:]), ")"))
+	if name != "" && desc != "" {
+		return name + " — " + desc
+	}
+	return s
 }
