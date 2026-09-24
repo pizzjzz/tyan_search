@@ -776,7 +776,11 @@ func welcomeText() string {
 		"*Примеры:*\n" +
 		"• `/find Taiga Aisaka`\n" +
 		"• `/find Тайга Айсака`\n" +
-		"• Или просто отправь скриншот"
+		"• Или просто отправь скриншот\n\n" +
+		"*О боте:*\n" +
+		"• Разработчик: [pizzjzz](https://github.com/pizzjzz)\n" +
+		"• Связь с разработчиком: [t.me/hurvya](https://t.me/hurvya)\n" +
+		"• Исходный код: [tyan_search](https://github.com/pizzjzz/tyan_search)"
 }
 
 // helpText — текст команды /help.
